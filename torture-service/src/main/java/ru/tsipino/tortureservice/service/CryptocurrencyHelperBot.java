@@ -13,6 +13,8 @@ import org.telegram.telegrambots.meta.api.objects.replykeyboard.InlineKeyboardMa
 import org.telegram.telegrambots.meta.api.objects.replykeyboard.buttons.InlineKeyboardButton;
 import org.telegram.telegrambots.meta.exceptions.TelegramApiException;
 import ru.tsipino.tortureservice.config.BotConfig;
+import ru.tsipino.tortureservice.controller.MsgController;
+import ru.tsipino.tortureservice.dto.MessageDTO;
 import ru.tsipino.tortureservice.entity.CurrencyParameters;
 import ru.tsipino.tortureservice.entity.Subscription;
 import ru.tsipino.tortureservice.repository.ParametersRepository;
@@ -25,20 +27,30 @@ public class CryptocurrencyHelperBot extends TelegramLongPollingBot {
   private ParametersRepository parametersRepository;
   private SubscriptionRepository subscriptionRepository;
 
+  private MsgController controller;
+
+  private CurrencyRequestService currencyRequestService;
+
   private String lastMessage;
 
   public CryptocurrencyHelperBot(
       BotConfig config,
       ParametersRepository parametersRepository,
-      SubscriptionRepository subscriptionRepository) {
+      SubscriptionRepository subscriptionRepository,
+      MsgController controller,
+      CurrencyRequestService currencyRequestService) {
     this.config = config;
     this.parametersRepository = parametersRepository;
     this.subscriptionRepository = subscriptionRepository;
+    this.controller = controller;
+    this.currencyRequestService = currencyRequestService;
     List<BotCommand> commandList = new ArrayList<>();
     commandList.add(new BotCommand("/start", "начало взаимодействия"));
     commandList.add(new BotCommand("/subscribe", "подписатья на курс криптовалюты"));
     commandList.add(new BotCommand("/unsubscribe", "отписаться от курса"));
-    commandList.add(new BotCommand("/show", "показать..."));
+    commandList.add(new BotCommand("/showLast", "показать последние изменения курсов"));
+    commandList.add(new BotCommand("/showMax", "показать максимальный курс"));
+    commandList.add(new BotCommand("/showMin", "показать минимальный курс"));
     try {
       execute(new SetMyCommands(commandList, new BotCommandScopeDefault(), null));
     } catch (TelegramApiException e) {
@@ -58,9 +70,12 @@ public class CryptocurrencyHelperBot extends TelegramLongPollingBot {
 
   @Override
   public void onUpdateReceived(Update update) {
+    long chatId = 0L;
+    long msgId = 0L;
     if (update.hasMessage() && update.getMessage().hasText()) {
       String messageText = update.getMessage().getText();
-      long chatId = update.getMessage().getChatId();
+      chatId = update.getMessage().getChatId();
+      msgId = update.getMessage().getMessageId();
       lastMessage = messageText;
       switch (messageText) {
         case "/start":
@@ -73,17 +88,22 @@ public class CryptocurrencyHelperBot extends TelegramLongPollingBot {
         case "/unsubscribe":
           unSubscribeCommandExecute(chatId);
           break;
-        case "/show":
-          sendMessage(chatId, "Отправить запрос");
+        case "/showLast":
+          sendMessage(chatId, currencyRequestService.getLastCurrencyList(chatId));
+          break;
+        case "/showMax":
+          sendMessage(chatId,currencyRequestService.getMaxCurrency(chatId));
+          break;
+        case "/showMin":
           break;
         default:
           sendMessage(chatId, "Нет такой команды");
       }
     } else if (update.hasCallbackQuery()) {
-      long chatId = update.getCallbackQuery().getMessage().getChatId();
-      long msgId = update.getCallbackQuery().getMessage().getMessageId();
+      chatId = update.getCallbackQuery().getMessage().getChatId();
+      msgId = update.getCallbackQuery().getMessage().getMessageId();
       String data = update.getCallbackQuery().getData();
-      // Передаём в kafka chatId, msgId, data
+      // Передаём в kafka chatId, msgId
       CurrencyParameters parameters = parametersRepository.findFirstByType(data).get();
       switch (lastMessage) {
         case "/subscribe":
@@ -93,6 +113,10 @@ public class CryptocurrencyHelperBot extends TelegramLongPollingBot {
           removeSubscribe(chatId, parameters);
           break;
       }
+    }
+    if ((update.hasMessage() && update.getMessage().hasText()) || update.hasCallbackQuery()) {
+      MessageDTO msg = new MessageDTO(chatId, msgId, lastMessage);
+      controller.sendOrder(1L, msg);
     }
   }
 

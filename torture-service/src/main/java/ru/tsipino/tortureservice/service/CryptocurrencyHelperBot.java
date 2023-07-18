@@ -2,10 +2,12 @@ package ru.tsipino.tortureservice.service;
 
 import java.util.ArrayList;
 import java.util.List;
+import lombok.extern.slf4j.Slf4j;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands;
 import org.telegram.telegrambots.meta.api.methods.send.SendMessage;
+import org.telegram.telegrambots.meta.api.methods.updatingmessages.EditMessageText;
 import org.telegram.telegrambots.meta.api.objects.Update;
 import org.telegram.telegrambots.meta.api.objects.commands.BotCommand;
 import org.telegram.telegrambots.meta.api.objects.commands.scope.BotCommandScopeDefault;
@@ -21,15 +23,16 @@ import ru.tsipino.tortureservice.repository.ParametersRepository;
 import ru.tsipino.tortureservice.repository.SubscriptionRepository;
 
 @Component
+@Slf4j
 public class CryptocurrencyHelperBot extends TelegramLongPollingBot {
 
-  private BotConfig config;
-  private ParametersRepository parametersRepository;
-  private SubscriptionRepository subscriptionRepository;
+  private final BotConfig config;
+  private final ParametersRepository parametersRepository;
+  private final SubscriptionRepository subscriptionRepository;
 
-  private MsgController controller;
+  private final MsgController controller;
 
-  private CurrencyRequestService currencyRequestService;
+  private final CurrencyRequestService currencyRequestService;
 
   private String lastMessage;
 
@@ -48,13 +51,14 @@ public class CryptocurrencyHelperBot extends TelegramLongPollingBot {
     commandList.add(new BotCommand("/start", "начало взаимодействия"));
     commandList.add(new BotCommand("/subscribe", "подписатья на курс криптовалюты"));
     commandList.add(new BotCommand("/unsubscribe", "отписаться от курса"));
-    commandList.add(new BotCommand("/showLast", "показать последние изменения курсов"));
-    commandList.add(new BotCommand("/showMax", "показать максимальный курс"));
-    commandList.add(new BotCommand("/showMin", "показать минимальный курс"));
+    commandList.add(new BotCommand("/last", "показать последние изменения курсов"));
+    commandList.add(new BotCommand("/max", "показать максимальный курс"));
+    commandList.add(new BotCommand("/min", "показать минимальный курс"));
+
     try {
       execute(new SetMyCommands(commandList, new BotCommandScopeDefault(), null));
     } catch (TelegramApiException e) {
-
+      log.error("Меню некоректно");
     }
   }
 
@@ -78,40 +82,36 @@ public class CryptocurrencyHelperBot extends TelegramLongPollingBot {
       msgId = update.getMessage().getMessageId();
       lastMessage = messageText;
       switch (messageText) {
-        case "/start":
-          startCommandExecute(chatId, update.getMessage().getChat().getFirstName());
-          // Передаём в kafka chatId, update.getMessage().getChat().getFirstName()
-          break;
-        case "/subscribe":
-          subscribeCommandExecute(chatId);
-          break;
-        case "/unsubscribe":
-          unSubscribeCommandExecute(chatId);
-          break;
-        case "/showLast":
-          sendMessage(chatId, currencyRequestService.getLastCurrencyList(chatId));
-          break;
-        case "/showMax":
-          sendMessage(chatId,currencyRequestService.getMaxCurrency(chatId));
-          break;
-        case "/showMin":
-          break;
-        default:
-          sendMessage(chatId, "Нет такой команды");
+        case "/start" -> startCommandExecute(chatId, update.getMessage().getChat().getFirstName());
+        case "/subscribe" -> subscribeCommandExecute(chatId);
+        case "/unsubscribe" -> unSubscribeCommandExecute(chatId);
+        case "/last" -> sendMessage(chatId, currencyRequestService.getLastCurrencyList(chatId));
+        case "/max" -> sendMessage(chatId, currencyRequestService.getMaxCurrency(chatId));
+        case "/min" -> sendMessage(chatId, currencyRequestService.getMinCurrency(chatId));
+        default -> sendMessage(chatId, "Нет такой команды");
       }
     } else if (update.hasCallbackQuery()) {
       chatId = update.getCallbackQuery().getMessage().getChatId();
       msgId = update.getCallbackQuery().getMessage().getMessageId();
       String data = update.getCallbackQuery().getData();
-      // Передаём в kafka chatId, msgId
       CurrencyParameters parameters = parametersRepository.findFirstByType(data).get();
+      String requestMsgText ="";
       switch (lastMessage) {
         case "/subscribe":
-          saveSubscribe(chatId, parameters);
+          requestMsgText = saveSubscribe(chatId, parameters) ?  "Подписка оформлена" : "Вы уже подписаны";
           break;
         case "/unsubscribe":
-          removeSubscribe(chatId, parameters);
+          requestMsgText = removeSubscribe(chatId, parameters) ? "Подписка отключена" : "Вы уже отключили подписку";
           break;
+      }
+      EditMessageText message = new EditMessageText();
+      message.setChatId(chatId);
+      message.setMessageId((int)msgId);
+      message.setText(requestMsgText);
+      try {
+        execute(message);
+      } catch (TelegramApiException e) {
+
       }
     }
     if ((update.hasMessage() && update.getMessage().hasText()) || update.hasCallbackQuery()) {
@@ -129,19 +129,21 @@ public class CryptocurrencyHelperBot extends TelegramLongPollingBot {
     return subscriptionRepository.findFirstByChatIdAndParameters(chatId, parameters).isEmpty();
   }
 
-  private void saveSubscribe(Long chatId, CurrencyParameters parameters) {
+  private boolean saveSubscribe(Long chatId, CurrencyParameters parameters) {
     if (isNotSubscribe(chatId, parameters)) {
       subscriptionRepository.save(
           Subscription.builder().chatId(chatId).parameters(parameters).build());
-    } else {
-      sendMessage(chatId, "Вы уже подписаны на этот курс");
+          return true;
     }
+    return false;
   }
 
-  private void removeSubscribe(Long chatId, CurrencyParameters parameters) {
+  private boolean removeSubscribe(Long chatId, CurrencyParameters parameters) {
     if (!isNotSubscribe(chatId, parameters)) {
       subscriptionRepository.deleteByChatIdAndParameters(chatId, parameters);
+      return true;
     }
+    return false;
   }
 
   private InlineKeyboardMarkup createMarkup(List<String> buttonText) {
@@ -160,12 +162,29 @@ public class CryptocurrencyHelperBot extends TelegramLongPollingBot {
     return markup;
   }
 
+  private List<String> getUserSubscriptionsTypes(long chatId) {
+    List<Subscription> subscriptions = subscriptionRepository.findAllByChatId(chatId);
+    if (subscriptions.isEmpty()) {
+      return null;
+    } else {
+      return subscriptions.stream().map(elem -> elem.getParameters().getType()).toList();
+    }
+  }
+
   private void subscribeCommandExecute(long chatId) {
     SendMessage message =
         new SendMessage(String.valueOf(chatId), "На какую валюту вы хотите подписаться?");
     List<CurrencyParameters> parametersList = parametersRepository.findAll();
-    List<String> types = parametersList.stream().map(elem -> elem.getType()).toList();
-    message.setReplyMarkup(createMarkup(types));
+    List<String> types = new ArrayList<>(parametersList.stream().map(elem -> elem.getType()).toList());
+    if (getUserSubscriptionsTypes(chatId) != null) {
+      types.removeAll(getUserSubscriptionsTypes(chatId));
+    }
+    if (types.isEmpty()) {
+      message.setText("Вы уже подписаны на все курсы!");
+    } else {
+      System.out.println("3");
+      message.setReplyMarkup(createMarkup(types));
+    }
     try {
       execute(message);
     } catch (TelegramApiException e) {
@@ -176,14 +195,13 @@ public class CryptocurrencyHelperBot extends TelegramLongPollingBot {
   private void unSubscribeCommandExecute(long chatId) {
     SendMessage message =
         new SendMessage(String.valueOf(chatId), "От какого курса вы хотите отказаться?");
-    List<Subscription> subscriptions = subscriptionRepository.findAllByChatId(chatId);
-    if (subscriptions.isEmpty()) {
-      message.setText("У вас нет ни одной подписки!");
-    } else {
-      List<String> types =
-          subscriptions.stream().map(elem -> elem.getParameters().getType()).toList();
-      message.setReplyMarkup(createMarkup(types));
-    }
+      List<String> types = getUserSubscriptionsTypes(chatId);
+      if (types == null) {
+        message.setText("У вас нет ни одной подписки!");
+      } else {
+        message.setReplyMarkup(createMarkup(types));
+      }
+
     try {
       execute(message);
     } catch (TelegramApiException e) {

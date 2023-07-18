@@ -54,10 +54,31 @@ public class CurrencyRequestService {
     getParametersList(chatId)
         .forEach(
             parameters -> {
-              sb.append("Максимальное значание ").append(parameters.getType()).append(":").append("\n");
+              sb.append("Максимальное значание ")
+                  .append(parameters.getType())
+                  .append(":")
+                  .append("\n");
               Currency currency =
                   (currencyRepository.findAllByParameters(parameters))
                       .stream().max(Comparator.comparingDouble(elem -> elem.getValue())).get();
+              sb.append(currency);
+            });
+    sb.toString();
+    return sb.toString();
+  }
+
+  public String getMinCurrency(Long chatId) {
+    StringBuilder sb = new StringBuilder();
+    getParametersList(chatId)
+        .forEach(
+            parameters -> {
+              sb.append("Минимальное значение ")
+                  .append(parameters.getType())
+                  .append(":")
+                  .append("\n");
+              Currency currency =
+                  (currencyRepository.findAllByParameters(parameters))
+                      .stream().min(Comparator.comparingDouble(elem -> elem.getValue())).get();
               sb.append(currency);
             });
     sb.toString();

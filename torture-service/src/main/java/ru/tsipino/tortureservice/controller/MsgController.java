@@ -10,9 +10,8 @@ import ru.tsipino.tortureservice.dto.MessageDTO;
 
 @Component
 @RestController
-@RequestMapping("msg")
+@RequestMapping("request")
 public class MsgController {
-
   public MsgController(KafkaTemplate<Long, MessageDTO> kafkaTemplate) {
     this.kafkaTemplate = kafkaTemplate;
   }
@@ -21,6 +20,6 @@ public class MsgController {
 
   @PostMapping
   public void sendOrder(Long msgId, MessageDTO msg) {
-    kafkaTemplate.send("msg", msgId, msg);
+    kafkaTemplate.send("request", msgId, msg);
   }
 }

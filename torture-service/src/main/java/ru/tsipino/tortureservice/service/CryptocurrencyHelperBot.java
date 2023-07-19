@@ -2,7 +2,12 @@ package ru.tsipino.tortureservice.service;
 
 import java.util.ArrayList;
 import java.util.List;
+
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import lombok.extern.slf4j.Slf4j;
+import org.springframework.kafka.annotation.EnableKafka;
+import org.springframework.kafka.annotation.KafkaListener;
 import org.springframework.stereotype.Component;
 import org.telegram.telegrambots.bots.TelegramLongPollingBot;
 import org.telegram.telegrambots.meta.api.methods.commands.SetMyCommands;
@@ -24,6 +29,7 @@ import ru.tsipino.tortureservice.repository.SubscriptionRepository;
 
 @Component
 @Slf4j
+@EnableKafka
 public class CryptocurrencyHelperBot extends TelegramLongPollingBot {
 
   private final BotConfig config;
@@ -32,7 +38,6 @@ public class CryptocurrencyHelperBot extends TelegramLongPollingBot {
 
   private final MsgController controller;
 
-  private final CurrencyRequestService currencyRequestService;
 
   private String lastMessage;
 
@@ -40,13 +45,11 @@ public class CryptocurrencyHelperBot extends TelegramLongPollingBot {
       BotConfig config,
       ParametersRepository parametersRepository,
       SubscriptionRepository subscriptionRepository,
-      MsgController controller,
-      CurrencyRequestService currencyRequestService) {
+      MsgController controller) {
     this.config = config;
     this.parametersRepository = parametersRepository;
     this.subscriptionRepository = subscriptionRepository;
     this.controller = controller;
-    this.currencyRequestService = currencyRequestService;
     List<BotCommand> commandList = new ArrayList<>();
     commandList.add(new BotCommand("/start", "начало взаимодействия"));
     commandList.add(new BotCommand("/subscribe", "подписатья на курс криптовалюты"));
@@ -82,28 +85,33 @@ public class CryptocurrencyHelperBot extends TelegramLongPollingBot {
       msgId = update.getMessage().getMessageId();
       lastMessage = messageText;
       switch (messageText) {
-        case "/start" -> startCommandExecute(chatId, update.getMessage().getChat().getFirstName());
-        case "/subscribe" -> subscribeCommandExecute(chatId);
-        case "/unsubscribe" -> unSubscribeCommandExecute(chatId);
-        case "/last" -> sendMessage(chatId, currencyRequestService.getLastCurrencyList(chatId));
-        case "/max" -> sendMessage(chatId, currencyRequestService.getMaxCurrency(chatId));
-        case "/min" -> sendMessage(chatId, currencyRequestService.getMinCurrency(chatId));
-        default -> sendMessage(chatId, "Нет такой команды");
+        case "/start":
+          startCommandExecute(chatId, update.getMessage().getChat().getFirstName());
+          break;
+            case "/subscribe": subscribeCommandExecute(chatId);
+            break;
+            case "/unsubscribe": unSubscribeCommandExecute(chatId);
+            break;
+        case "/last":
+        case "/max":
+        case "/min":
+          break;
+        default:
+          sendMessage(chatId, "Нет такой команды");
+          break;
       }
+      MessageDTO msg = new MessageDTO(chatId, msgId, lastMessage);
+      controller.sendOrder(msg.getChatId(), msg);
     } else if (update.hasCallbackQuery()) {
       chatId = update.getCallbackQuery().getMessage().getChatId();
       msgId = update.getCallbackQuery().getMessage().getMessageId();
       String data = update.getCallbackQuery().getData();
       CurrencyParameters parameters = parametersRepository.findFirstByType(data).get();
-      String requestMsgText ="";
-      switch (lastMessage) {
-        case "/subscribe":
-          requestMsgText = saveSubscribe(chatId, parameters) ?  "Подписка оформлена" : "Вы уже подписаны";
-          break;
-        case "/unsubscribe":
-          requestMsgText = removeSubscribe(chatId, parameters) ? "Подписка отключена" : "Вы уже отключили подписку";
-          break;
-      }
+      String requestMsgText = switch (lastMessage) {
+        case "/subscribe" -> saveSubscribe(chatId, parameters) ? "Подписка оформлена" : "Вы уже подписаны";
+        case "/unsubscribe" -> removeSubscribe(chatId, parameters) ? "Подписка отключена" : "Вы уже отключили подписку";
+        default -> "";
+      };
       EditMessageText message = new EditMessageText();
       message.setChatId(chatId);
       message.setMessageId((int)msgId);
@@ -114,10 +122,14 @@ public class CryptocurrencyHelperBot extends TelegramLongPollingBot {
 
       }
     }
-    if ((update.hasMessage() && update.getMessage().hasText()) || update.hasCallbackQuery()) {
-      MessageDTO msg = new MessageDTO(chatId, msgId, lastMessage);
-      controller.sendOrder(1L, msg);
-    }
+  }
+
+  @KafkaListener(topics="response")
+  public void msgListener(String msg) throws JsonProcessingException {
+        ObjectMapper mapper = new ObjectMapper();
+        MessageDTO messageDTO = mapper.readValue(msg, MessageDTO.class);
+        sendMessage(messageDTO.getChatId(), messageDTO.getCommand());
+
   }
 
   private void startCommandExecute(long chatId, String userName) {
@@ -175,14 +187,13 @@ public class CryptocurrencyHelperBot extends TelegramLongPollingBot {
     SendMessage message =
         new SendMessage(String.valueOf(chatId), "На какую валюту вы хотите подписаться?");
     List<CurrencyParameters> parametersList = parametersRepository.findAll();
-    List<String> types = new ArrayList<>(parametersList.stream().map(elem -> elem.getType()).toList());
+    List<String> types = new ArrayList<>(parametersList.stream().map(CurrencyParameters::getType).toList());
     if (getUserSubscriptionsTypes(chatId) != null) {
       types.removeAll(getUserSubscriptionsTypes(chatId));
     }
     if (types.isEmpty()) {
       message.setText("Вы уже подписаны на все курсы!");
     } else {
-      System.out.println("3");
       message.setReplyMarkup(createMarkup(types));
     }
     try {
